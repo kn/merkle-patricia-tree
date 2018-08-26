@@ -5,11 +5,21 @@ const inherits = require('util').inherits
 const Readable = require('readable-stream').Readable
 const levelws = require('level-ws')
 const callTogether = require('./util').callTogether
+const semaphore = require('semaphore')
 
 module.exports = checkpointInterface
 
 function checkpointInterface (trie) {
   this._scratch = null
+  // Without a lock, callers have no controll over which checkpoint to commit
+  // or revert to since checkpoints are managed with LIFO list.
+  // e.g.
+  // 1. caller A creates a checkpoint
+  // 2. caller B creates a checkpoint
+  // 3. caller A reverts but this reverts to the checkpoint created by B instead of A.
+  // This semaphore lock allows caller to lock checkpoint mode so that
+  // other callers cannot pollute checkpoints until the caller with the lock exit.
+  this._cpContextSem = semaphore(1)
   trie._checkpoints = []
 
   Object.defineProperty(trie, 'isCheckpoint', {
@@ -34,19 +44,30 @@ function checkpointInterface (trie) {
  * Creates a checkpoint that can later be reverted to or committed. After this is called, no changes to the trie will be permanently saved until `commit` is called
  * @method checkpoint
  */
-function checkpoint (cb) {
+function checkpoint (cb, lockCpMode) {
   var self = this
+
   if (cb) {
-    cb = callTogether(cb, self.sem.leave)
-    self.sem.take(function() {
-      _createCheckpoint()
-      cb()
-    })
+    if (!self.isCheckpoint || lockCpMode) {
+      self._cpContextSem.take(function() {
+        _createCheckpointWithSem()
+      })
+    } else {
+      _createCheckpointWithSem()
+    }
   } else {
     // For backward compatibility:
     // checkopint() didn't take cb as an argument before.
     // This means callers assumed this function is synchronous.
     _createCheckpoint()
+  }
+
+  function _createCheckpointWithSem() {
+    cb = callTogether(cb, self.sem.leave)
+    self.sem.take(function() {
+      _createCheckpoint()
+      cb()
+    })
   }
 
   function _createCheckpoint() {
@@ -119,6 +140,7 @@ function _enterCpMode () {
 function _exitCpMode (commitState, cb) {
   var self = this
   var scratch = this._scratch
+  cb = callTogether(cb, self._cpContextSem.leave)
   this._scratch = null
   this._getDBs = this._getDBs.slice(1)
   this._putDBs = this.__putDBs
