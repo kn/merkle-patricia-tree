@@ -41,9 +41,11 @@ tape('secure tests shouldnt crash ', function (t) {
       trie.put(ck, c, done)
     },
     function (done) {
-      trie.checkpoint()
-      trie.checkpoint()
-      done()
+      trie.checkpoint(function(){
+        trie.checkpoint(function(){
+          done()
+        })
+      })
     },
     function (done) {
       trie.commit(done)

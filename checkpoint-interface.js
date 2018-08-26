@@ -34,12 +34,27 @@ function checkpointInterface (trie) {
  * Creates a checkpoint that can later be reverted to or committed. After this is called, no changes to the trie will be permanently saved until `commit` is called
  * @method checkpoint
  */
-function checkpoint () {
+function checkpoint (cb) {
   var self = this
-  var wasCheckpoint = self.isCheckpoint
-  self._checkpoints.push(self.root)
-  if (!wasCheckpoint && self.isCheckpoint) {
-    self._enterCpMode()
+  if (cb) {
+    cb = callTogether(cb, self.sem.leave)
+    self.sem.take(function() {
+      _createCheckpoint()
+      cb()
+    })
+  } else {
+    // For backward compatibility:
+    // checkopint() didn't take cb as an argument before.
+    // This means callers assumed this function is synchronous.
+    _createCheckpoint()
+  }
+
+  function _createCheckpoint() {
+    var wasCheckpoint = self.isCheckpoint
+    self._checkpoints.push(self.root)
+    if (!wasCheckpoint && self.isCheckpoint) {
+      self._enterCpMode()
+    }
   }
 }
 
